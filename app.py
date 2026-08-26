@@ -1,3 +1,4 @@
+from datetime import datetime
 import io
 import re
 from bs4 import BeautifulSoup
@@ -7,14 +8,25 @@ import requests
 app = Flask(__name__)
 
 
-def scrape_usccb_readings():
-    url = "https://bible.usccb.org/daily-bible-reading"
+def fetch_usccb_readings(date_str):
+    # Convert YYYY-MM-DD to MMDDYY format required by USCCB
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%m%d%y")
+    except ValueError:
+        date_obj = datetime.now()
+        formatted_date = date_obj.strftime("%m%d%y")
+
+    url = f"https://bible.usccb.org/bible/readings/{formatted_date}.cfm"
+
+    # Spoof a standard web browser header to prevent 403 Forbidden errors
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
     }
 
     res = requests.get(url, headers=headers, timeout=10)
@@ -23,35 +35,36 @@ def scrape_usccb_readings():
     soup = BeautifulSoup(res.text, "html.parser")
     output_lines = []
 
-    # Get page title/date header
-    page_title = soup.find("h1")
-    if page_title:
-        output_lines.append(f"--- {page_title.get_text(strip=True)} ---")
+    # Title / Date Header
+    title = soup.find("h1") or soup.find("title")
+    if title:
+        clean_title = title.get_text(strip=True).replace(" - ", " ")
+        output_lines.append(f"--- {clean_title} ---")
 
-    # Find reading blocks (USCCB groups readings in sections or inner-overview containers)
+    # Locate reading content containers
     sections = soup.find_all(
-        ["section", "article", "div"], class_=re.compile(r"b-verse|content", re.I)
+        ["section", "article", "div"],
+        class_=re.compile(r"b-verse|content|inner-overview", re.I),
     )
 
     if not sections:
         sections = [soup.body]
 
     for sec in sections:
-        # Extract headings (e.g., Reading 1, Responsorial Psalm, Gospel)
+        # Extract headings (Reading 1, Responsorial Psalm, Gospel, etc.)
         headings = sec.find_all(
             ["h2", "h3", "h4"], class_=re.compile(r"title|heading", re.I)
         )
         for h in headings:
             htext = h.get_text(strip=True)
-            if htext:
+            if htext and "daily reading" not in htext.lower():
                 output_lines.append(f"\n[{htext}]")
 
-        # Extract text blocks
+        # Extract reading text paragraphs
         paras = sec.find_all("p")
         for p in paras:
             text = p.get_text(separator=" ", strip=True)
-            # Filter out UI boilerplate text
-            if len(text) > 10 and not any(
+            if len(text) > 15 and not any(
                 bad in text.lower()
                 for bad in [
                     "copyright",
@@ -62,7 +75,7 @@ def scrape_usccb_readings():
             ):
                 output_lines.append(text)
 
-    # ProPresenter TXT Format: Double line breaks (\n\n) separate slides
+    # Return string separated by double line breaks (creates new slides in ProPresenter)
     return "\n\n".join(output_lines)
 
 
@@ -71,21 +84,23 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/download")
+@app.route("/download", methods=["POST"])
 def download():
+    selected_date = request.form.get("date_input")
+    if not selected_date:
+        selected_date = datetime.now().strftime("%Y-%m-%d")
+
     try:
-        content = scrape_usccb_readings()
+        content = fetch_usccb_readings(selected_date)
+        filename = f"USCCB_Readings_{selected_date}.txt"
+
         return Response(
             content,
-            mimetype="text/plain",
-            headers={
-                "Content-Disposition": (
-                    "attachment;filename=USCCB_Daily_Readings.txt"
-                )
-            },
+            mimetype="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f"attachment;filename={filename}"},
         )
     except Exception as e:
-        return f"Error fetching USCCB readings: {str(e)}", 500
+        return f"Error fetching readings: {str(e)}", 500
 
 
 if __name__ == "__main__":
