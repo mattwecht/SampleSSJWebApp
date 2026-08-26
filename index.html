@@ -12,14 +12,15 @@
         }
         .card {
             background: #fff; padding: 2.5rem; border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 450px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 450px; width: 90%;
         }
         button {
             background-color: #0066cc; color: white; padding: 0.8rem 1.6rem;
             font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
         }
         button:hover { background-color: #004bb3; }
-        #status { margin-top: 1rem; font-size: 0.9rem; color: #666; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #status { margin-top: 1rem; font-size: 0.9rem; color: #666; word-break: break-word; }
     </style>
 </head>
 <body>
@@ -31,54 +32,104 @@
     </div>
 
     <script>
+        async function fetchHtmlWithFallback(targetUrl) {
+            // List of proxies to try sequentially if one fails
+            const proxies = [
+                url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+                url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+                url => `https://thingproxy.freeboard.io/fetch/${url}`
+            ];
+
+            for (let i = 0; i < proxies.length; i++) {
+                try {
+                    const proxyUrl = proxies[i](targetUrl);
+                    const res = await fetch(proxyUrl);
+                    if (!res.ok) continue;
+
+                    if (i === 0) {
+                        const data = await res.json();
+                        if (data.contents) return data.contents;
+                    } else {
+                        const text = await res.text();
+                        if (text) return text;
+                    }
+                } catch (e) {
+                    console.warn(`Proxy ${i + 1} failed, attempting fallback...`);
+                }
+            }
+            throw new Error("All proxy services failed to fetch USCCB data.");
+        }
+
         async function generateFile() {
             const status = document.getElementById('status');
             const btn = document.getElementById('fetchBtn');
             status.innerText = "Fetching readings...";
+            status.style.color = "#666";
             btn.disabled = true;
 
-            // Use a CORS proxy to allow client-side scraping from USCCB
             const targetUrl = 'https://bible.usccb.org/daily-bible-reading';
-            const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl);
 
             try {
-                const res = await fetch(proxyUrl);
-                const data = await res.json();
+                const rawHtml = await fetchHtmlWithFallback(targetUrl);
                 
                 const parser = new DOMParser();
-                const doc = parser.parseFromString(data.contents, 'text/html');
+                const doc = parser.parseFromString(rawHtml, 'text/html');
 
                 let lines = [];
-                const title = doc.querySelector('h1');
+                
+                // Header / Date Title
+                const title = doc.querySelector('h1') || doc.querySelector('.b-sr-heading');
                 if (title) lines.push(`--- ${title.textContent.trim()} ---`);
 
-                const contentBlocks = doc.querySelectorAll('.b-verse, section, article');
+                // Locate reading blocks
+                const contentBlocks = doc.querySelectorAll('.b-verse, .inner-overview, section, article');
+                
+                if (contentBlocks.length === 0) {
+                    throw new Error("Could not parse reading structure from HTML.");
+                }
+
                 contentBlocks.forEach(block => {
                     const headings = block.querySelectorAll('h2, h3, h4');
-                    headings.forEach(h => lines.push(`\n[${h.textContent.trim()}]`));
+                    headings.forEach(h => {
+                        const hText = h.textContent.trim();
+                        if (hText) lines.push(`\n[${hText}]`);
+                    });
 
                     const paragraphs = block.querySelectorAll('p');
                     paragraphs.forEach(p => {
                         const txt = p.textContent.replace(/\s+/g, ' ').trim();
-                        if (txt.length > 15 && !txt.toLowerCase().includes('copyright')) {
+                        if (txt.length > 15 && !txt.toLowerCase().includes('copyright') && !txt.toLowerCase().includes('get daily readings')) {
                             lines.push(txt);
                         }
                     });
                 });
 
+                if (lines.length <= 1) {
+                    // Alternative fallback selector if USCCB updated page layout
+                    const allParas = doc.querySelectorAll('main p, article p');
+                    allParas.forEach(p => {
+                        const txt = p.textContent.replace(/\s+/g, ' ').trim();
+                        if (txt.length > 20 && !txt.toLowerCase().includes('copyright')) {
+                            lines.push(txt);
+                        }
+                    });
+                }
+
                 const outputText = lines.join('\n\n');
                 
-                // Trigger file download in browser
+                // Trigger file download
                 const blob = new Blob([outputText], { type: 'text/plain' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = 'USCCB_Daily_Readings.txt';
+                a.download = `USCCB_Daily_Readings_${new Date().toISOString().slice(0,10)}.txt`;
                 a.click();
 
                 status.innerText = "Downloaded successfully!";
+                status.style.color = "green";
             } catch (err) {
                 console.error(err);
-                status.innerText = "Error fetching readings. Check browser console.";
+                status.innerText = `Error: ${err.message}`;
+                status.style.color = "red";
             } finally {
                 btn.disabled = false;
             }
