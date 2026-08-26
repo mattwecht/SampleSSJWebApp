@@ -12,7 +12,7 @@
         }
         .card {
             background: #fff; padding: 2.5rem; border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 450px; width: 90%;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 480px; width: 90%;
         }
         button {
             background-color: #0066cc; color: white; padding: 0.8rem 1.6rem;
@@ -26,99 +26,64 @@
 <body>
     <div class="card">
         <h1>USCCB to ProPresenter</h1>
-        <p>Click below to fetch today's Catholic Daily Readings and create a ProPresenter text file directly in your browser.</p>
+        <p>Click below to fetch today's Catholic Daily Readings via official USCCB RSS and create your slide file.</p>
         <button id="fetchBtn" onclick="generateFile()">Download ProPresenter File</button>
         <div id="status"></div>
     </div>
 
     <script>
-        async function fetchHtmlWithFallback(targetUrl) {
-            // List of proxies to try sequentially if one fails
-            const proxies = [
-                url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-                url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-                url => `https://thingproxy.freeboard.io/fetch/${url}`
-            ];
-
-            for (let i = 0; i < proxies.length; i++) {
-                try {
-                    const proxyUrl = proxies[i](targetUrl);
-                    const res = await fetch(proxyUrl);
-                    if (!res.ok) continue;
-
-                    if (i === 0) {
-                        const data = await res.json();
-                        if (data.contents) return data.contents;
-                    } else {
-                        const text = await res.text();
-                        if (text) return text;
-                    }
-                } catch (e) {
-                    console.warn(`Proxy ${i + 1} failed, attempting fallback...`);
-                }
-            }
-            throw new Error("All proxy services failed to fetch USCCB data.");
-        }
-
         async function generateFile() {
             const status = document.getElementById('status');
             const btn = document.getElementById('fetchBtn');
-            status.innerText = "Fetching readings...";
+            status.innerText = "Fetching readings from RSS...";
             status.style.color = "#666";
             btn.disabled = true;
 
-            const targetUrl = 'https://bible.usccb.org/daily-bible-reading';
+            // RSS endpoint converted to JSON via rss2json API
+            const rssUrl = "https://bible.usccb.org/readings/daily-readings.rss";
+            const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
 
             try {
-                const rawHtml = await fetchHtmlWithFallback(targetUrl);
+                const res = await fetch(apiUrl);
+                if (!res.ok) throw new Error("Could not connect to RSS provider.");
                 
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(rawHtml, 'text/html');
+                const data = await res.json();
+                if (data.status !== 'ok' || !data.items || data.items.length === 0) {
+                    throw new Error("No reading items found in RSS feed.");
+                }
 
                 let lines = [];
-                
-                // Header / Date Title
-                const title = doc.querySelector('h1') || doc.querySelector('.b-sr-heading');
-                if (title) lines.push(`--- ${title.textContent.trim()} ---`);
+                const feedTitle = data.feed.title || "USCCB Daily Readings";
+                lines.push(`--- ${feedTitle} ---`);
 
-                // Locate reading blocks
-                const contentBlocks = doc.querySelectorAll('.b-verse, .inner-overview, section, article');
-                
-                if (contentBlocks.length === 0) {
-                    throw new Error("Could not parse reading structure from HTML.");
-                }
+                data.items.forEach(item => {
+                    if (item.title) {
+                        lines.push(`\n[${item.title.trim()}]`);
+                    }
 
-                contentBlocks.forEach(block => {
-                    const headings = block.querySelectorAll('h2, h3, h4');
-                    headings.forEach(h => {
-                        const hText = h.textContent.trim();
-                        if (hText) lines.push(`\n[${hText}]`);
-                    });
-
-                    const paragraphs = block.querySelectorAll('p');
-                    paragraphs.forEach(p => {
-                        const txt = p.textContent.replace(/\s+/g, ' ').trim();
-                        if (txt.length > 15 && !txt.toLowerCase().includes('copyright') && !txt.toLowerCase().includes('get daily readings')) {
-                            lines.push(txt);
-                        }
-                    });
+                    // Parse the HTML content inside the RSS item description
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(item.content || item.description, 'text/html');
+                    
+                    const paragraphs = doc.querySelectorAll('p, div');
+                    if (paragraphs.length > 0) {
+                        paragraphs.forEach(p => {
+                            const txt = p.textContent.replace(/\s+/g, ' ').trim();
+                            if (txt.length > 15 && !txt.toLowerCase().includes('copyright')) {
+                                lines.push(txt);
+                            }
+                        });
+                    } else {
+                        // Fallback to text content if no paragraph tags
+                        const txt = doc.body.textContent.replace(/\s+/g, ' ').trim();
+                        if (txt.length > 15) lines.push(txt);
+                    }
                 });
-
-                if (lines.length <= 1) {
-                    // Alternative fallback selector if USCCB updated page layout
-                    const allParas = doc.querySelectorAll('main p, article p');
-                    allParas.forEach(p => {
-                        const txt = p.textContent.replace(/\s+/g, ' ').trim();
-                        if (txt.length > 20 && !txt.toLowerCase().includes('copyright')) {
-                            lines.push(txt);
-                        }
-                    });
-                }
 
                 const outputText = lines.join('\n\n');
                 
                 // Trigger file download
-                const blob = new Blob([outputText], { type: 'text/plain' });
+                const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = `USCCB_Daily_Readings_${new Date().toISOString().slice(0,10)}.txt`;
