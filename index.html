@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USCCB to ProPresenter</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #f4f6f9; color: #333; display: flex;
+            justify-content: center; align-items: center; height: 100vh; margin: 0;
+        }
+        .card {
+            background: #fff; padding: 2.5rem; border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 450px;
+        }
+        button {
+            background-color: #0066cc; color: white; padding: 0.8rem 1.6rem;
+            font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+        }
+        button:hover { background-color: #004bb3; }
+        #status { margin-top: 1rem; font-size: 0.9rem; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>USCCB to ProPresenter</h1>
+        <p>Click below to fetch today's Catholic Daily Readings and create a ProPresenter text file directly in your browser.</p>
+        <button id="fetchBtn" onclick="generateFile()">Download ProPresenter File</button>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        async function generateFile() {
+            const status = document.getElementById('status');
+            const btn = document.getElementById('fetchBtn');
+            status.innerText = "Fetching readings...";
+            btn.disabled = true;
+
+            // Use a CORS proxy to allow client-side scraping from USCCB
+            const targetUrl = 'https://bible.usccb.org/daily-bible-reading';
+            const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl);
+
+            try {
+                const res = await fetch(proxyUrl);
+                const data = await res.json();
+                
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(data.contents, 'text/html');
+
+                let lines = [];
+                const title = doc.querySelector('h1');
+                if (title) lines.push(`--- ${title.textContent.trim()} ---`);
+
+                const contentBlocks = doc.querySelectorAll('.b-verse, section, article');
+                contentBlocks.forEach(block => {
+                    const headings = block.querySelectorAll('h2, h3, h4');
+                    headings.forEach(h => lines.push(`\n[${h.textContent.trim()}]`));
+
+                    const paragraphs = block.querySelectorAll('p');
+                    paragraphs.forEach(p => {
+                        const txt = p.textContent.replace(/\s+/g, ' ').trim();
+                        if (txt.length > 15 && !txt.toLowerCase().includes('copyright')) {
+                            lines.push(txt);
+                        }
+                    });
+                });
+
+                const outputText = lines.join('\n\n');
+                
+                // Trigger file download in browser
+                const blob = new Blob([outputText], { type: 'text/plain' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'USCCB_Daily_Readings.txt';
+                a.click();
+
+                status.innerText = "Downloaded successfully!";
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Error fetching readings. Check browser console.";
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
