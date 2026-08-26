@@ -14,13 +14,9 @@
             background: #fff; padding: 2.5rem; border-radius: 12px;
             box-shadow: 0 10px 25px rgba(0,0,0,0.08); text-align: center; max-width: 480px; width: 90%;
         }
-        input[type="date"] {
-            padding: 0.6rem; font-size: 1rem; margin-bottom: 1.5rem;
-            border: 1px solid #ccc; border-radius: 6px; width: 100%; box-sizing: border-box;
-        }
         button {
             background-color: #0066cc; color: white; padding: 0.8rem 1.6rem;
-            font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; width: 100%;
+            font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
         }
         button:hover { background-color: #004bb3; }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
@@ -30,90 +26,59 @@
 <body>
     <div class="card">
         <h1>USCCB to ProPresenter</h1>
-        <p>Select a date to fetch the Catholic Daily Readings and create your slide file.</p>
-        
-        <input type="date" id="readingDate" />
-        
+        <p>Click below to fetch today's Catholic Daily Readings via official USCCB RSS and create your slide file.</p>
         <button id="fetchBtn" onclick="generateFile()">Download ProPresenter File</button>
         <div id="status"></div>
     </div>
 
     <script>
-        // Set date picker to today automatically
-        document.addEventListener('DOMContentLoaded', () => {
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('readingDate').value = today;
-        });
-
         async function generateFile() {
             const status = document.getElementById('status');
             const btn = document.getElementById('fetchBtn');
-            const dateInput = document.getElementById('readingDate').value;
-
-            if (!dateInput) {
-                status.innerText = "Please select a date.";
-                status.style.color = "red";
-                return;
-            }
-
-            status.innerText = "Fetching readings...";
+            status.innerText = "Fetching readings from RSS...";
             status.style.color = "#666";
             btn.disabled = true;
 
-            // Format date for USCCB URL (MMDDYY)
-            const [year, month, day] = dateInput.split('-');
-            const shortYear = year.slice(-2);
-            const formattedDate = `${month}${day}${shortYear}`;
-            
-            const targetUrl = `https://bible.usccb.org/bible/readings/${formattedDate}.cfm`;
-            
-            // Using a CORS proxy that bypasses standard blocks
-            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
+            // RSS endpoint converted to JSON via rss2json API
+            const rssUrl = "https://bible.usccb.org/readings/daily-readings.rss";
+            const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
 
             try {
-                const res = await fetch(proxyUrl);
-                if (!res.ok) throw new Error(`HTTP error! Status: ${res.status}`);
+                const res = await fetch(apiUrl);
+                if (!res.ok) throw new Error("Could not connect to RSS provider.");
                 
-                const rawHtml = await res.text();
-                
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(rawHtml, 'text/html');
+                const data = await res.json();
+                if (data.status !== 'ok' || !data.items || data.items.length === 0) {
+                    throw new Error("No reading items found in RSS feed.");
+                }
 
                 let lines = [];
-                
-                // Header / Date Title
-                const title = doc.querySelector('h1') || doc.querySelector('.b-sr-heading') || doc.querySelector('title');
-                if (title) {
-                    let cleanTitle = title.textContent.replace(' - ', ' ').trim();
-                    lines.push(`--- ${cleanTitle} ---`);
-                }
+                const feedTitle = data.feed.title || "USCCB Daily Readings";
+                lines.push(`--- ${feedTitle} ---`);
 
-                // Locate reading blocks
-                const contentBlocks = doc.querySelectorAll('.b-verse, .inner-overview, section, article');
-                
-                if (contentBlocks.length === 0) {
-                    throw new Error("Could not parse reading structure from HTML. USCCB may have blocked the request or changed layout.");
-                }
+                data.items.forEach(item => {
+                    if (item.title) {
+                        lines.push(`\n[${item.title.trim()}]`);
+                    }
 
-                contentBlocks.forEach(block => {
-                    const headings = block.querySelectorAll('h2, h3, h4');
-                    headings.forEach(h => {
-                        const hText = h.textContent.trim();
-                        if (hText && !hText.toLowerCase().includes('daily reading')) {
-                            lines.push(`\n[${hText}]`);
-                        }
-                    });
-
-                    const paragraphs = block.querySelectorAll('p');
-                    paragraphs.forEach(p => {
-                        const txt = p.textContent.replace(/\s+/g, ' ').trim();
-                        if (txt.length > 15 && !txt.toLowerCase().includes('copyright') && !txt.toLowerCase().includes('get daily readings')) {
-                            lines.push(txt);
-                        }
-                    });
+                    // Parse the HTML content inside the RSS item description
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(item.content || item.description, 'text/html');
+                    
+                    const paragraphs = doc.querySelectorAll('p, div');
+                    if (paragraphs.length > 0) {
+                        paragraphs.forEach(p => {
+                            const txt = p.textContent.replace(/\s+/g, ' ').trim();
+                            if (txt.length > 15 && !txt.toLowerCase().includes('copyright')) {
+                                lines.push(txt);
+                            }
+                        });
+                    } else {
+                        // Fallback to text content if no paragraph tags
+                        const txt = doc.body.textContent.replace(/\s+/g, ' ').trim();
+                        if (txt.length > 15) lines.push(txt);
+                    }
                 });
-
-                if (lines.length <= 1) throw new Error("No passage content found for this date.");
 
                 const outputText = lines.join('\n\n');
                 
@@ -121,14 +86,14 @@
                 const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = `USCCB_Daily_Readings_${dateInput}.txt`;
+                a.download = `USCCB_Daily_Readings_${new Date().toISOString().slice(0,10)}.txt`;
                 a.click();
 
-                status.innerText = `Downloaded successfully for ${dateInput}!`;
+                status.innerText = "Downloaded successfully!";
                 status.style.color = "green";
             } catch (err) {
                 console.error(err);
-                status.innerText = `Error: ${err.message}. Try again later.`;
+                status.innerText = `Error: ${err.message}`;
                 status.style.color = "red";
             } finally {
                 btn.disabled = false;
