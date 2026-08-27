@@ -37,7 +37,7 @@ def fetch_usccb_readings(date_str):
 
     res = session.get(url, timeout=10)
 
-    # Fallback to general daily URL if date-specific URL fails
+    # Fallback to standard daily URL if date-specific URL fails
     if res.status_code != 200:
         res = session.get(
             "https://bible.usccb.org/daily-bible-reading", timeout=10
@@ -46,12 +46,21 @@ def fetch_usccb_readings(date_str):
 
     soup = BeautifulSoup(res.text, "html.parser")
 
-    # 1. REMOVE FOOTER ELEMENTS & NAVIGATION BOILERPLATE FROM DOM
-    for footer_tag in soup.find_all(
-        ["footer", "nav"],
-        class_=re.compile(r"footer|nav|site-footer|b-footer", re.I),
+    # 1. REMOVE FOOTER, NAVIGATION, & UI CONTROLS FROM DOM
+    for unwanted_tag in soup.find_all(
+        ["footer", "nav", "button", "script", "style"],
+        class_=re.compile(
+            r"footer|nav|site-footer|b-footer|expand|collapse|accordion|toggle",
+            re.I,
+        ),
     ):
-        footer_tag.decompose()
+        unwanted_tag.decompose()
+
+    # Decompose specific elements matching UI controls (e.g. "Expand All Topics")
+    for btn in soup.find_all(["a", "button", "div", "span"]):
+        b_text = btn.get_text(strip=True).lower()
+        if "expand all" in b_text or "collapse all" in b_text:
+            btn.decompose()
 
     output_lines = []
 
@@ -75,7 +84,7 @@ def fetch_usccb_readings(date_str):
         main_body = soup.find("main") or soup.body
         sections = [main_body]
 
-    # Phrases commonly found in USCCB footers/promos to ignore
+    # Expanded list of UI phrases, footer links, and funding notices to ignore
     ignored_phrases = [
         "copyright",
         "subscribe",
@@ -86,6 +95,12 @@ def fetch_usccb_readings(date_str):
         "united states conference of catholic bishops",
         "all rights reserved",
         "privacy policy",
+        "expand all",
+        "collapse all",
+        "made possible by funding",
+        "funding from",
+        "catholic communication campaign",
+        "bishops' emergency disaster fund",
     ]
 
     for sec in sections:
@@ -101,6 +116,7 @@ def fetch_usccb_readings(date_str):
                     "get daily",
                     "subscribe",
                     "podcast",
+                    "expand",
                 ]
             ):
                 output_lines.append(f"\n[{htext}]")
@@ -110,7 +126,7 @@ def fetch_usccb_readings(date_str):
             text = p.get_text(separator=" ", strip=True)
             text_lower = text.lower()
 
-            # Filter length and non-reading footer text
+            # Filter out UI controls, funding text, and boilerplate links
             if len(text) > 15 and not any(
                 bad in text_lower for bad in ignored_phrases
             ):
