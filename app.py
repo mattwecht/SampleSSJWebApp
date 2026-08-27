@@ -1,5 +1,6 @@
 from datetime import datetime
 import io
+import json
 import re
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
@@ -18,37 +19,45 @@ def fetch_usccb_by_date(date_str):
         formatted_date = date_obj.strftime("%m%d%y")
 
     target_url = f"https://bible.usccb.org/bible/readings/{formatted_date}.cfm"
-
     session = requests.Session()
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://bible.usccb.org/",
-    }
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        }
+    )
 
     raw_html = None
 
-    # 1. Try direct fetch
+    # 1. Direct fetch attempt
     try:
-        res = session.get(target_url, headers=headers, timeout=8)
-        if res.status_code == 200:
+        res = session.get(target_url, timeout=6)
+        if res.status_code == 200 and "USCCB" in res.text:
             raw_html = res.text
     except Exception:
         pass
 
-    # 2. Try proxy fallback if direct fetch fails/gets 403
+    # 2. Proxy Fallback 1: AllOrigins JSON API
     if not raw_html:
         try:
-            proxy_url = (
-                f"https://corsproxy.io/?{requests.utils.quote(target_url)}"
-            )
-            res = session.get(proxy_url, timeout=10)
+            proxy_url = f"https://api.allorigins.win/get?url={requests.utils.quote(target_url)}"
+            res = session.get(proxy_url, timeout=8)
             if res.status_code == 200:
+                data = res.json()
+                if data.get("contents") and "USCCB" in data["contents"]:
+                    raw_html = data["contents"]
+        except Exception:
+            pass
+
+    # 3. Proxy Fallback 2: CodeTabs Raw Proxy
+    if not raw_html:
+        try:
+            proxy_url = f"https://api.codetabs.com/v1/proxy?quest={requests.utils.quote(target_url)}"
+            res = session.get(proxy_url, timeout=8)
+            if res.status_code == 200 and "USCCB" in res.text:
                 raw_html = res.text
         except Exception:
             pass
@@ -57,18 +66,18 @@ def fetch_usccb_by_date(date_str):
         soup = BeautifulSoup(raw_html, "html.parser")
         return parse_usccb_html(soup, date_str)
 
-    # 3. Fallback to RSS for Today's Date
+    # 4. Fallback for TODAY'S date via RSS feed
     today_str = datetime.now().strftime("%Y-%m-%d")
     if date_str == today_str:
         return fetch_today_rss(date_str)
 
     raise Exception(
-        f"Could not retrieve readings for {date_str}. USCCB may not have published this date yet."
+        f"Could not retrieve readings for {date_str}. The USCCB page for this date may not be available yet."
     )
 
 
 def parse_usccb_html(soup, date_str):
-    # Remove footers, scripts, navigation, UI buttons
+    # Strip headers, footers, scripts, navigation, UI buttons
     for tag in soup.find_all(
         ["footer", "nav", "button", "script", "style", "a"],
         class_=re.compile(
@@ -78,7 +87,7 @@ def parse_usccb_html(soup, date_str):
         tag.decompose()
 
     output_lines = []
-    seen_texts = set()  # Set to track duplicate lines
+    seen_texts = set()
 
     # Title / Date Header
     title = (
@@ -92,7 +101,7 @@ def parse_usccb_html(soup, date_str):
     else:
         output_lines.append(f"--- USCCB Readings ({date_str}) ---")
 
-    # Target specific reading containers (b-verse) to avoid duplicate nested parents
+    # Target specific reading containers (.b-verse)
     sections = soup.find_all(
         ["div", "section", "article"], class_=re.compile(r"b-verse", re.I)
     )
@@ -118,6 +127,8 @@ def parse_usccb_html(soup, date_str):
         "made possible by funding",
         "funding from",
         "catholic communication campaign",
+        "fixcorserrors",
+        "corsproxy",
     ]
 
     for sec in sections:
