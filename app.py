@@ -101,7 +101,7 @@ def parse_usccb_html(soup, date_str):
     else:
         output_lines.append(f"--- USCCB Readings ({date_str}) ---")
 
-    # Target specific reading containers (.b-verse)
+    # Target reading blocks (.b-verse)
     sections = soup.find_all(
         ["div", "section", "article"], class_=re.compile(r"b-verse", re.I)
     )
@@ -132,49 +132,41 @@ def parse_usccb_html(soup, date_str):
     ]
 
     for sec in sections:
+        full_sec_text = sec.get_text().lower()
+        is_psalm = "psalm" in full_sec_text
+
         headings = sec.find_all(
-            ["h2", "h3", "h4"], class_=re.compile(r"title|heading", re.I)
+            ["h2", "h3", "h4"], class_=re.compile(r"title|heading|name", re.I)
         )
 
-        section_heading_text = ""
         for h in headings:
             htext = h.get_text(strip=True)
             if htext and not any(
                 p in htext.lower()
                 for p in ["daily reading", "get daily", "subscribe", "podcast"]
             ):
-                section_heading_text += " " + htext.lower()
                 if htext not in seen_texts:
                     seen_texts.add(htext)
                     output_lines.append(f"\n[{htext}]")
 
-        # Check if current section is the Responsorial Psalm
-        is_psalm = "psalm" in section_heading_text
-
-        paras = sec.find_all("p")
-        for p in paras:
-            if is_psalm:
-                # Extract ONLY bold text elements (<strong> or <b>) for Responsorial Psalm
-                bold_tags = p.find_all(["strong", "b"])
-                if bold_tags:
-                    bold_text_combined = " ".join(
-                        tag.get_text(strip=True) for tag in bold_tags
-                    )
-                    clean_bold = re.sub(
-                        r"\s+", " ", bold_text_combined
-                    ).strip()
-
-                    if (
-                        len(clean_bold) > 3
-                        and not any(
-                            bad in clean_bold.lower() for bad in ignored_phrases
-                        )
-                        and clean_bold not in seen_texts
-                    ):
-                        seen_texts.add(clean_bold)
-                        output_lines.append(clean_bold)
-            else:
-                # Normal processing for Reading I, Gospel, etc.
+        if is_psalm:
+            # Strictly extract ONLY bold elements (<b> and <strong>) within Psalm blocks
+            bold_tags = sec.find_all(["strong", "b"])
+            for b in bold_tags:
+                btext = re.sub(r"\s+", " ", b.get_text(strip=True)).strip()
+                # Skip headings or short numbers/markers that might be bolded
+                if (
+                    len(btext) > 3
+                    and not any(bad in btext.lower() for bad in ignored_phrases)
+                    and "responsorial psalm" not in btext.lower()
+                    and btext not in seen_texts
+                ):
+                    seen_texts.add(btext)
+                    output_lines.append(btext)
+        else:
+            # Standard parsing for Reading I, Reading II, Gospel, etc.
+            paras = sec.find_all("p")
+            for p in paras:
                 text = p.get_text(separator=" ", strip=True)
                 if (
                     len(text) > 15
@@ -211,23 +203,20 @@ def fetch_today_rss(date_str):
         description_text = item.findtext("description") or ""
         soup = BeautifulSoup(description_text, "html.parser")
 
-        paragraphs = soup.find_all(["p", "div"])
-
-        for p in paragraphs:
-            if is_psalm:
-                bold_tags = p.find_all(["strong", "b"])
-                if bold_tags:
-                    bold_text = " ".join(
-                        tag.get_text(strip=True) for tag in bold_tags
-                    ).strip()
-                    if (
-                        len(bold_text) > 3
-                        and "copyright" not in bold_text.lower()
-                        and bold_text not in seen_texts
-                    ):
-                        seen_texts.add(bold_text)
-                        output_lines.append(bold_text)
-            else:
+        if is_psalm:
+            bold_tags = soup.find_all(["strong", "b"])
+            for b in bold_tags:
+                bold_text = re.sub(r"\s+", " ", b.get_text(strip=True)).strip()
+                if (
+                    len(bold_text) > 3
+                    and "copyright" not in bold_text.lower()
+                    and bold_text not in seen_texts
+                ):
+                    seen_texts.add(bold_text)
+                    output_lines.append(bold_text)
+        else:
+            paragraphs = soup.find_all(["p", "div"])
+            for p in paragraphs:
                 text = p.get_text(separator=" ", strip=True)
                 if (
                     len(text) > 15
