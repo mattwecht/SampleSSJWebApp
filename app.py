@@ -17,7 +17,6 @@ def fetch_usccb_by_date(date_str):
         date_obj = datetime.now()
         formatted_date = date_obj.strftime("%m%d%y")
 
-    # 1. Try USCCB date-specific URL directly
     target_url = f"https://bible.usccb.org/bible/readings/{formatted_date}.cfm"
 
     session = requests.Session()
@@ -34,7 +33,7 @@ def fetch_usccb_by_date(date_str):
 
     raw_html = None
 
-    # Try direct fetch first
+    # 1. Try direct fetch
     try:
         res = session.get(target_url, headers=headers, timeout=8)
         if res.status_code == 200:
@@ -42,7 +41,7 @@ def fetch_usccb_by_date(date_str):
     except Exception:
         pass
 
-    # 2. Proxy Fallback if Render IP gets 403 Forbidden on direct fetch
+    # 2. Try proxy fallback if direct fetch fails/gets 403
     if not raw_html:
         try:
             proxy_url = (
@@ -54,12 +53,11 @@ def fetch_usccb_by_date(date_str):
         except Exception:
             pass
 
-    # 3. If HTML was fetched for the specified date, parse it
     if raw_html:
         soup = BeautifulSoup(raw_html, "html.parser")
         return parse_usccb_html(soup, date_str)
 
-    # 4. Fallback for TODAY ONLY if date-specific endpoints fail
+    # 3. Fallback to RSS for Today's Date
     today_str = datetime.now().strftime("%Y-%m-%d")
     if date_str == today_str:
         return fetch_today_rss(date_str)
@@ -70,7 +68,7 @@ def fetch_usccb_by_date(date_str):
 
 
 def parse_usccb_html(soup, date_str):
-    # Remove UI noise, navigation, and expand buttons
+    # Remove footers, scripts, navigation, UI buttons
     for tag in soup.find_all(
         ["footer", "nav", "button", "script", "style", "a"],
         class_=re.compile(
@@ -93,7 +91,7 @@ def parse_usccb_html(soup, date_str):
     else:
         output_lines.append(f"--- USCCB Readings ({date_str}) ---")
 
-    # Target core content blocks
+    # Target reading blocks
     sections = soup.find_all(
         ["section", "article", "div"],
         class_=re.compile(r"b-verse|content|inner-overview", re.I),
@@ -122,21 +120,44 @@ def parse_usccb_html(soup, date_str):
         headings = sec.find_all(
             ["h2", "h3", "h4"], class_=re.compile(r"title|heading", re.I)
         )
+
+        section_heading_text = ""
         for h in headings:
             htext = h.get_text(strip=True)
             if htext and not any(
                 p in htext.lower()
                 for p in ["daily reading", "get daily", "subscribe", "podcast"]
             ):
+                section_heading_text += " " + htext.lower()
                 output_lines.append(f"\n[{htext}]")
+
+        # Check if current section is the Responsorial Psalm
+        is_psalm = "psalm" in section_heading_text
 
         paras = sec.find_all("p")
         for p in paras:
-            text = p.get_text(separator=" ", strip=True)
-            if len(text) > 15 and not any(
-                bad in text.lower() for bad in ignored_phrases
-            ):
-                output_lines.append(text)
+            if is_psalm:
+                # Extract ONLY bold text elements (<strong> or <b>) for Responsorial Psalm
+                bold_tags = p.find_all(["strong", "b"])
+                if bold_tags:
+                    bold_text_combined = " ".join(
+                        tag.get_text(strip=True) for tag in bold_tags
+                    )
+                    clean_bold = re.sub(
+                        r"\s+", " ", bold_text_combined
+                    ).strip()
+
+                    if len(clean_bold) > 3 and not any(
+                        bad in clean_bold.lower() for bad in ignored_phrases
+                    ):
+                        output_lines.append(clean_bold)
+            else:
+                # Normal processing for Reading I, Gospel, etc.
+                text = p.get_text(separator=" ", strip=True)
+                if len(text) > 15 and not any(
+                    bad in text.lower() for bad in ignored_phrases
+                ):
+                    output_lines.append(text)
 
     if len(output_lines) <= 1:
         raise Exception("Parsed empty reading text from HTML.")
@@ -155,18 +176,29 @@ def fetch_today_rss(date_str):
 
     items = channel.findall("item") if channel is not None else []
     for item in items:
-        title_text = item.findtext("title")
+        title_text = item.findtext("title") or ""
         if title_text:
             output_lines.append(f"\n[{title_text.strip()}]")
 
+        is_psalm = "psalm" in title_text.lower()
         description_text = item.findtext("description") or ""
         soup = BeautifulSoup(description_text, "html.parser")
+
         paragraphs = soup.find_all(["p", "div"])
 
         for p in paragraphs:
-            text = p.get_text(separator=" ", strip=True)
-            if len(text) > 15 and "copyright" not in text.lower():
-                output_lines.append(text)
+            if is_psalm:
+                bold_tags = p.find_all(["strong", "b"])
+                if bold_tags:
+                    bold_text = " ".join(
+                        tag.get_text(strip=True) for tag in bold_tags
+                    ).strip()
+                    if len(bold_text) > 3 and "copyright" not in bold_text.lower():
+                        output_lines.append(bold_text)
+            else:
+                text = p.get_text(separator=" ", strip=True)
+                if len(text) > 15 and "copyright" not in text.lower():
+                    output_lines.append(text)
 
     return "\n\n".join(output_lines)
 
