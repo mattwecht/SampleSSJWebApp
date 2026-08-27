@@ -1,6 +1,7 @@
+from datetime import datetime
 import io
 import re
-from datetime import datetime
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from flask import Flask, Response, render_template, request
 import requests
@@ -9,9 +10,8 @@ app = Flask(__name__)
 
 
 def fetch_usccb_readings(date_str):
-    # USCCB RSS Feed URL
+    # Direct RSS feed URL
     rss_url = "https://bible.usccb.org/readings/daily-readings.rss"
-    api_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
 
     session = requests.Session()
     session.headers.update(
@@ -20,19 +20,24 @@ def fetch_usccb_readings(date_str):
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
-            )
+            ),
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
         }
     )
 
-    res = session.get(api_url, timeout=10)
+    res = session.get(rss_url, timeout=10)
     res.raise_for_status()
 
-    data = res.json()
-    if data.get("status") != "ok" or not data.get("items"):
-        raise Exception("Could not retrieve readings from USCCB RSS feed.")
+    # Parse XML natively in Python
+    root = ET.fromstring(res.content)
+    channel = root.find("channel")
 
     output_lines = []
-    feed_title = data.get("feed", {}).get("title", "USCCB Daily Readings")
+    feed_title = (
+        channel.findtext("title")
+        if channel is not None
+        else "USCCB Daily Readings"
+    )
     output_lines.append(f"--- {feed_title} ({date_str}) ---")
 
     ignored_phrases = [
@@ -52,17 +57,20 @@ def fetch_usccb_readings(date_str):
         "catholic communication campaign",
     ]
 
-    for item in data.get("items", []):
-        # Section Heading (e.g. Reading I, Gospel, Responsorial Psalm)
-        title_text = item.get("title", "").strip()
+    items = channel.findall("item") if channel is not None else []
+    if not items:
+        raise Exception("No reading items found in RSS feed.")
+
+    for item in items:
+        title_text = item.findtext("title")
         if title_text:
-            output_lines.append(f"\n[{title_text}]")
+            output_lines.append(f"\n[{title_text.strip()}]")
 
-        # Extract text content from description HTML
-        html_content = item.get("content") or item.get("description") or ""
-        soup = BeautifulSoup(html_content, "html.parser")
+        # Get content from description tag
+        description_text = item.findtext("description") or ""
+        soup = BeautifulSoup(description_text, "html.parser")
 
-        # Strip navigation/footer elements
+        # Strip navigation, UI widgets, and links
         for tag in soup.find_all(
             ["footer", "nav", "button", "a"],
             class_=re.compile(r"footer|nav|expand|collapse", re.I),
@@ -86,7 +94,7 @@ def fetch_usccb_readings(date_str):
                 output_lines.append(raw_text)
 
     if len(output_lines) <= 1:
-        raise Exception("Failed to parse clean text from USCCB feed.")
+        raise Exception("Failed to parse clean text from USCCB RSS feed.")
 
     return "\n\n".join(output_lines)
 
