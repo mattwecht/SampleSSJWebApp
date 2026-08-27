@@ -78,6 +78,7 @@ def parse_usccb_html(soup, date_str):
         tag.decompose()
 
     output_lines = []
+    seen_texts = set()  # Set to track duplicate lines
 
     # Title / Date Header
     title = (
@@ -91,11 +92,14 @@ def parse_usccb_html(soup, date_str):
     else:
         output_lines.append(f"--- USCCB Readings ({date_str}) ---")
 
-    # Target reading blocks
+    # Target specific reading containers (b-verse) to avoid duplicate nested parents
     sections = soup.find_all(
-        ["section", "article", "div"],
-        class_=re.compile(r"b-verse|content|inner-overview", re.I),
+        ["div", "section", "article"], class_=re.compile(r"b-verse", re.I)
     )
+    if not sections:
+        sections = soup.find_all(
+            ["div", "section"], class_=re.compile(r"inner-overview", re.I)
+        )
     if not sections:
         sections = [soup.find("main") or soup.body]
 
@@ -129,7 +133,9 @@ def parse_usccb_html(soup, date_str):
                 for p in ["daily reading", "get daily", "subscribe", "podcast"]
             ):
                 section_heading_text += " " + htext.lower()
-                output_lines.append(f"\n[{htext}]")
+                if htext not in seen_texts:
+                    seen_texts.add(htext)
+                    output_lines.append(f"\n[{htext}]")
 
         # Check if current section is the Responsorial Psalm
         is_psalm = "psalm" in section_heading_text
@@ -147,16 +153,24 @@ def parse_usccb_html(soup, date_str):
                         r"\s+", " ", bold_text_combined
                     ).strip()
 
-                    if len(clean_bold) > 3 and not any(
-                        bad in clean_bold.lower() for bad in ignored_phrases
+                    if (
+                        len(clean_bold) > 3
+                        and not any(
+                            bad in clean_bold.lower() for bad in ignored_phrases
+                        )
+                        and clean_bold not in seen_texts
                     ):
+                        seen_texts.add(clean_bold)
                         output_lines.append(clean_bold)
             else:
                 # Normal processing for Reading I, Gospel, etc.
                 text = p.get_text(separator=" ", strip=True)
-                if len(text) > 15 and not any(
-                    bad in text.lower() for bad in ignored_phrases
+                if (
+                    len(text) > 15
+                    and not any(bad in text.lower() for bad in ignored_phrases)
+                    and text not in seen_texts
                 ):
+                    seen_texts.add(text)
                     output_lines.append(text)
 
     if len(output_lines) <= 1:
@@ -173,11 +187,13 @@ def fetch_today_rss(date_str):
     root = ET.fromstring(res.content)
     channel = root.find("channel")
     output_lines = [f"--- USCCB Daily Readings ({date_str}) ---"]
+    seen_texts = set()
 
     items = channel.findall("item") if channel is not None else []
     for item in items:
         title_text = item.findtext("title") or ""
-        if title_text:
+        if title_text and title_text not in seen_texts:
+            seen_texts.add(title_text)
             output_lines.append(f"\n[{title_text.strip()}]")
 
         is_psalm = "psalm" in title_text.lower()
@@ -193,11 +209,21 @@ def fetch_today_rss(date_str):
                     bold_text = " ".join(
                         tag.get_text(strip=True) for tag in bold_tags
                     ).strip()
-                    if len(bold_text) > 3 and "copyright" not in bold_text.lower():
+                    if (
+                        len(bold_text) > 3
+                        and "copyright" not in bold_text.lower()
+                        and bold_text not in seen_texts
+                    ):
+                        seen_texts.add(bold_text)
                         output_lines.append(bold_text)
             else:
                 text = p.get_text(separator=" ", strip=True)
-                if len(text) > 15 and "copyright" not in text.lower():
+                if (
+                    len(text) > 15
+                    and "copyright" not in text.lower()
+                    and text not in seen_texts
+                ):
+                    seen_texts.add(text)
                     output_lines.append(text)
 
     return "\n\n".join(output_lines)
