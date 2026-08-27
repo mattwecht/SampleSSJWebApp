@@ -1,6 +1,6 @@
-from datetime import datetime
 import io
 import re
+from datetime import datetime
 from bs4 import BeautifulSoup
 from flask import Flask, Response, render_template, request
 import requests
@@ -32,20 +32,12 @@ def fetch_usccb_readings(date_str):
             ),
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://bible.usccb.org/",
-            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
         }
     )
 
     res = session.get(url, timeout=10)
 
-    # Fallback to daily URL if date-specific URL fails
+    # Fallback to general daily URL if date-specific URL fails
     if res.status_code != 200:
         res = session.get(
             "https://bible.usccb.org/daily-bible-reading", timeout=10
@@ -53,6 +45,14 @@ def fetch_usccb_readings(date_str):
         res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")
+
+    # 1. REMOVE FOOTER ELEMENTS & NAVIGATION BOILERPLATE FROM DOM
+    for footer_tag in soup.find_all(
+        ["footer", "nav"],
+        class_=re.compile(r"footer|nav|site-footer|b-footer", re.I),
+    ):
+        footer_tag.decompose()
+
     output_lines = []
 
     # Title / Date Header
@@ -65,14 +65,28 @@ def fetch_usccb_readings(date_str):
         clean_title = title.get_text(strip=True).replace(" - ", " ")
         output_lines.append(f"--- {clean_title} ---")
 
-    # Content Containers
+    # Content Containers (targeting core passage structures)
     sections = soup.find_all(
         ["section", "article", "div"],
         class_=re.compile(r"b-verse|content|inner-overview", re.I),
     )
 
     if not sections:
-        sections = [soup.body]
+        main_body = soup.find("main") or soup.body
+        sections = [main_body]
+
+    # Phrases commonly found in USCCB footers/promos to ignore
+    ignored_phrases = [
+        "copyright",
+        "subscribe",
+        "get daily readings",
+        "listen podcast",
+        "en español",
+        "view full reading",
+        "united states conference of catholic bishops",
+        "all rights reserved",
+        "privacy policy",
+    ]
 
     for sec in sections:
         headings = sec.find_all(
@@ -80,29 +94,32 @@ def fetch_usccb_readings(date_str):
         )
         for h in headings:
             htext = h.get_text(strip=True)
-            if (
-                htext
-                and "daily reading" not in htext.lower()
-                and "get daily" not in htext.lower()
+            if htext and not any(
+                phrase in htext.lower()
+                for phrase in [
+                    "daily reading",
+                    "get daily",
+                    "subscribe",
+                    "podcast",
+                ]
             ):
                 output_lines.append(f"\n[{htext}]")
 
         paras = sec.find_all("p")
         for p in paras:
             text = p.get_text(separator=" ", strip=True)
+            text_lower = text.lower()
+
+            # Filter length and non-reading footer text
             if len(text) > 15 and not any(
-                bad in text.lower()
-                for bad in [
-                    "copyright",
-                    "subscribe",
-                    "get daily readings",
-                    "listen podcasts",
-                ]
+                bad in text_lower for bad in ignored_phrases
             ):
                 output_lines.append(text)
 
     if not output_lines or len(output_lines) <= 1:
-        raise Exception("Failed to parse text content from USCCB page.")
+        raise Exception(
+            "Failed to parse clean reading text from USCCB page."
+        )
 
     return "\n\n".join(output_lines)
 
@@ -125,7 +142,9 @@ def download():
         return Response(
             content,
             mimetype="text/plain; charset=utf-8",
-            headers={"Content-Disposition": f"attachment;filename={filename}"},
+            headers={
+                "Content-Disposition": f"attachment;filename={filename}"
+            },
         )
     except Exception as e:
         return f"Error fetching readings: {str(e)}", 500
