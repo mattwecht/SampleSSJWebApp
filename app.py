@@ -18,7 +18,6 @@ def fetch_usccb_readings(date_str):
 
     url = f"https://bible.usccb.org/bible/readings/{formatted_date}.cfm"
 
-    # Use a persistent session to hold headers
     session = requests.Session()
     session.headers.update(
         {
@@ -44,10 +43,9 @@ def fetch_usccb_readings(date_str):
         }
     )
 
-    # Make request
     res = session.get(url, timeout=10)
 
-    # Fallback to homepage if date specific URL returns 404 or 403
+    # Fallback to daily URL if date-specific URL fails
     if res.status_code != 200:
         res = session.get(
             "https://bible.usccb.org/daily-bible-reading", timeout=10
@@ -67,7 +65,7 @@ def fetch_usccb_readings(date_str):
         clean_title = title.get_text(strip=True).replace(" - ", " ")
         output_lines.append(f"--- {clean_title} ---")
 
-    # Locate reading content containers
+    # Content Containers
     sections = soup.find_all(
         ["section", "article", "div"],
         class_=re.compile(r"b-verse|content|inner-overview", re.I),
@@ -85,7 +83,6 @@ def fetch_usccb_readings(date_str):
             if (
                 htext
                 and "daily reading" not in htext.lower()
-                ...
                 and "get daily" not in htext.lower()
             ):
                 output_lines.append(f"\n[{htext}]")
