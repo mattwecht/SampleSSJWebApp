@@ -9,7 +9,6 @@ app = Flask(__name__)
 
 
 def fetch_usccb_readings(date_str):
-    # Convert YYYY-MM-DD to MMDDYY format required by USCCB
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         formatted_date = date_obj.strftime("%m%d%y")
@@ -19,24 +18,51 @@ def fetch_usccb_readings(date_str):
 
     url = f"https://bible.usccb.org/bible/readings/{formatted_date}.cfm"
 
-    # Spoof a standard web browser header to prevent 403 Forbidden errors
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    # Use a persistent session to hold headers
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://bible.usccb.org/",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+    )
 
-    res = requests.get(url, headers=headers, timeout=10)
-    res.raise_for_status()
+    # Make request
+    res = session.get(url, timeout=10)
+
+    # Fallback to homepage if date specific URL returns 404 or 403
+    if res.status_code != 200:
+        res = session.get(
+            "https://bible.usccb.org/daily-bible-reading", timeout=10
+        )
+        res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")
     output_lines = []
 
     # Title / Date Header
-    title = soup.find("h1") or soup.find("title")
+    title = (
+        soup.find("h1")
+        or soup.find("h2", class_=re.compile(r"heading", re.I))
+        or soup.find("title")
+    )
     if title:
         clean_title = title.get_text(strip=True).replace(" - ", " ")
         output_lines.append(f"--- {clean_title} ---")
@@ -51,16 +77,19 @@ def fetch_usccb_readings(date_str):
         sections = [soup.body]
 
     for sec in sections:
-        # Extract headings (Reading 1, Responsorial Psalm, Gospel, etc.)
         headings = sec.find_all(
             ["h2", "h3", "h4"], class_=re.compile(r"title|heading", re.I)
         )
         for h in headings:
             htext = h.get_text(strip=True)
-            if htext and "daily reading" not in htext.lower():
+            if (
+                htext
+                and "daily reading" not in htext.lower()
+                ...
+                and "get daily" not in htext.lower()
+            ):
                 output_lines.append(f"\n[{htext}]")
 
-        # Extract reading text paragraphs
         paras = sec.find_all("p")
         for p in paras:
             text = p.get_text(separator=" ", strip=True)
@@ -75,7 +104,9 @@ def fetch_usccb_readings(date_str):
             ):
                 output_lines.append(text)
 
-    # Return string separated by double line breaks (creates new slides in ProPresenter)
+    if not output_lines or len(output_lines) <= 1:
+        raise Exception("Failed to parse text content from USCCB page.")
+
     return "\n\n".join(output_lines)
 
 
